@@ -1,42 +1,56 @@
 import os
 import re
 import requests
+from html.parser import HTMLParser
 
-API_KEY = os.environ.get('API_KEY')
 GDRIVE_URL = os.environ.get('GDRIVE_URL')
 
 def extract_folder_id(url):
     match = re.search(r'/folders/([a-zA-Z0-9_-]+)', url)
     return match.group(1) if match else None
 
-def list_files(folder_id, parent_name=None):
-    results = []
-    url = f"https://www.googleapis.com/drive/v3/files"
-    params = {
-        'q': f"'{folder_id}' in parents",
-        'key': API_KEY,
-        'fields': 'files(id,name,mimeType)',
-        'pageSize': 1000
-    }
+def get_folder_contents(folder_id):
+    """Scrape folder contents using embeddedfolderview (no API key needed)"""
+    url = f"https://drive.google.com/embeddedfolderview?id={folder_id}"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    response = requests.get(url, headers=headers)
 
-    response = requests.get(url, params=params)
-    data = response.json()
+    items = []
+    # Parse file entries
+    file_pattern = r'<div class="flip-entry" id="entry-([^"]+)"[^>]*data-target="([^"]*)"[^>]*>.*?<div class="flip-entry-title">([^<]+)</div>'
+    for match in re.finditer(file_pattern, response.text, re.DOTALL):
+        item_id, target, name = match.groups()
+        is_folder = 'drive.google.com/drive/folders' in target
+        items.append({
+            'id': item_id,
+            'name': name.strip(),
+            'is_folder': is_folder
+        })
 
-    if 'files' not in data:
-        print(f"Error: {data}")
-        return results
+    # Alternative pattern
+    if not items:
+        alt_pattern = r'\["([a-zA-Z0-9_-]{20,})","([^"]+)",(\d+|null),"([^"]*)"'
+        for match in re.finditer(alt_pattern, response.text):
+            item_id, name, size, mime = match.groups()
+            is_folder = mime == 'application/vnd.google-apps.folder' or size == 'null'
+            items.append({
+                'id': item_id,
+                'name': name,
+                'is_folder': is_folder
+            })
 
-    for item in data['files']:
-        if item['mimeType'] == 'application/vnd.google-apps.folder':
-            # Recursively process subfolder
-            results.extend(list_files(item['id'], item['name']))
+    return items
+
+def list_files_recursive(folder_id, folder_name, results):
+    """Recursively list all files"""
+    items = get_folder_contents(folder_id)
+
+    for item in items:
+        if item['is_folder']:
+            list_files_recursive(item['id'], item['name'], results)
         else:
-            # File found - save with parent folder name
-            folder_name = parent_name or "root"
             download_link = f"https://drive.google.com/uc?export=download&id={item['id']}"
             results.append(f"{folder_name} {download_link}")
-
-    return results
 
 def main():
     folder_id = extract_folder_id(GDRIVE_URL)
@@ -44,22 +58,22 @@ def main():
         print("Invalid Google Drive URL")
         return
 
-    # Get root folder name first
-    url = f"https://www.googleapis.com/drive/v3/files/{folder_id}"
-    params = {'key': API_KEY, 'fields': 'name'}
-    response = requests.get(url, params=params)
-    root_name = response.json().get('name', 'root')
+    # Get root folder name
+    url = f"https://drive.google.com/drive/folders/{folder_id}"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    response = requests.get(url, headers=headers)
+    name_match = re.search(r'<title>([^<]+) - Google Drive</title>', response.text)
+    root_name = name_match.group(1) if name_match else "root"
 
-    # List all files recursively
-    files = list_files(folder_id, root_name)
+    results = []
+    list_files_recursive(folder_id, root_name, results)
 
     with open('list.txt', 'w') as f:
-        for line in files:
+        for line in results:
             f.write(line + '\n')
 
-    print(f"Found {len(files)} files")
-    print("Contents of list.txt:")
-    for line in files:
+    print(f"Found {len(results)} files")
+    for line in results:
         print(line)
 
 if __name__ == '__main__':
