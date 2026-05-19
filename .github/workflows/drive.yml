@@ -23,12 +23,20 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests
+        run: pip install gdown
 
       - name: List files from Google Drive
         env:
           GDRIVE_URL: ${{ github.event.inputs.gdrive_url }}
         run: python scripts/gdrive_list.py
+
+      - name: Commit list.txt
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add list.txt
+          git commit -m "Update list.txt" || echo "No changes"
+          git push
 
       - name: Upload list.txt
         uses: actions/upload-artifact@v4
